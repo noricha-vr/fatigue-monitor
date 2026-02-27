@@ -1,0 +1,19 @@
+# uv
+.venv/
+.python-version
+uv.lock
+
+# 実行時生成ファイル（個人データ）
+state.json
+log.jsonl
+*.log
+
+# 環境変数（example は除外しない）
+.env
+!.env.example
+
+# macOS
+.DS_Store
+
+# launchd（install.sh で自動生成）
+launchd/*.plist

@@ -25,13 +25,10 @@ Environment variables (loaded from ~/.env):
 """
 
 import argparse
-import base64
 import json
 import os
 import subprocess
 import sys
-import tempfile
-import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request
@@ -43,6 +40,7 @@ from dotenv import load_dotenv
 MONITOR_DIR = Path.home() / ".local" / "share" / "fatigue-monitor"
 STATE_FILE = MONITOR_DIR / "state.json"
 LOG_FILE = MONITOR_DIR / "log.jsonl"
+ALERT_AUDIO_FILE = MONITOR_DIR / "alert.wav"
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_HISTORY_FILE = Path.home() / ".codex" / "history.jsonl"
@@ -249,18 +247,18 @@ Return ONLY valid JSON:
 
 
 # --- Discord 通知（理由付き）---
-def notify_discord(score: float, reason: str, stats: dict):
+def notify_discord(score: float, reason: str, stats: dict) -> bool:
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     if not webhook_url:
         print("DISCORD_WEBHOOK_URL not set, skipping", file=sys.stderr)
-        return
+        return False
 
     if not webhook_url.startswith(DISCORD_WEBHOOK_PREFIX):
         print(
             f"Error: DISCORD_WEBHOOK_URL must start with {DISCORD_WEBHOOK_PREFIX}",
             file=sys.stderr,
         )
-        return
+        return False
 
     late_str = "yes (late night)" if stats["is_late_night"] else "no"
     sources = ", ".join(stats.get("sources", []))
@@ -293,71 +291,28 @@ def notify_discord(score: float, reason: str, stats: dict):
         with request.urlopen(req, timeout=10):
             pass
         print("Discord: sent")
+        return True
     except URLError as e:
         print(f"Discord: failed - {e}", file=sys.stderr)
+        return False
 
 
-# --- Gemini TTS 音声通知 ---
-def notify_tts(score: float, reason: str):
-    """Gemini TTS API で音声を生成し afplay で再生する。
-
-    PCM データ（s16le 24kHz mono）を wave モジュールで WAV に変換するため
-    ffmpeg 不要。一時ファイルは再生後に自動削除。
-    """
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        print("GEMINI_API_KEY not set, skipping TTS", file=sys.stderr)
-        return
-
-    text = f"疲労スコア{score:.0f}です。{reason}。少し休憩してみてはいかがでしょうか？"
-    payload = {
-        "contents": [{"parts": [{"text": text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": "Kore"}
-                }
-            },
-        },
-    }
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash-preview-tts:generateContent"
-    )
-    req = request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST",
-    )
+# --- 音声通知（事前生成済み WAV を再生）---
+def notify_tts() -> bool:
+    """generate_audio.py で事前生成した alert.wav を afplay で再生する。"""
+    if not ALERT_AUDIO_FILE.exists():
+        print(
+            f"TTS: {ALERT_AUDIO_FILE} not found. Run: uv run --script generate_audio.py",
+            file=sys.stderr,
+        )
+        return False
     try:
-        with request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        audio_b64 = data["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
-        pcm_data = base64.b64decode(audio_b64)
-    except Exception as e:
-        print(f"TTS: API error - {e}", file=sys.stderr)
-        return
-
-    # PCM → WAV → afplay（ffmpeg 不要）
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        with wave.open(tmp_path, "wb") as wav:
-            wav.setnchannels(1)     # モノラル
-            wav.setsampwidth(2)     # 16bit
-            wav.setframerate(24000) # 24kHz
-            wav.writeframes(pcm_data)
-        subprocess.run(["afplay", tmp_path], check=True, timeout=60)
+        subprocess.run(["afplay", str(ALERT_AUDIO_FILE)], check=True, timeout=60)
         print("TTS: played")
+        return True
     except Exception as e:
         print(f"TTS: playback error - {e}", file=sys.stderr)
-    finally:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
+        return False
 
 
 # --- 評価ログ保存 ---
@@ -435,9 +390,9 @@ def main():
         if args.dry_run:
             print("[dry-run] Skipping notifications.")
         else:
-            notify_discord(score, reason, stats)
-            notify_tts(score, reason)
-        notified = not args.dry_run
+            discord_ok = notify_discord(score, reason, stats)
+            tts_ok = notify_tts()
+            notified = discord_ok and tts_ok
 
     save_log(score, reason, stats, notified)
     save_state({"last_check_ts": now_ts})

@@ -144,13 +144,15 @@ When the fatigue score reaches the threshold, you'll get a Discord message like 
 
 ### Voice alert (macOS)
 
-A Japanese TTS message is played via `afplay`:
+A pre-generated WAV file is played via `afplay`:
 
-> 疲労スコア7です。プロンプトが短く曖昧化。少し休憩してみてはいかがでしょうか？
+> 疲れていませんか？少し休んでみてはいかがでしょうか。
 
-- Model: `gemini-2.5-flash-preview-tts`
+- Model: `gemini-2.5-pro-preview-tts`
 - Voice: Kore (Japanese)
-- No ffmpeg required – uses Python's `wave` module for PCM→WAV conversion
+- The audio file is generated once during `install.sh` and saved to `~/.local/share/fatigue-monitor/alert.wav`
+- Alerts play the local file with no API call at runtime
+- To regenerate: `uv run --script generate_audio.py`
 
 ---
 

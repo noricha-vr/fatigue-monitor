@@ -144,13 +144,15 @@ uv run --script check.py --reset
 
 ### 音声アラート（macOS）
 
-`afplay` で日本語 TTS メッセージが再生される:
+`afplay` で事前生成した WAV ファイルが再生される:
 
-> 疲労スコア7です。プロンプトが短く曖昧化。少し休憩してみてはいかがでしょうか？
+> 疲れていませんか？少し休んでみてはいかがでしょうか。
 
-- モデル: `gemini-2.5-flash-preview-tts`
+- モデル: `gemini-2.5-pro-preview-tts`
 - ボイス: Kore（日本語）
-- ffmpeg 不要 – Python の `wave` モジュールで PCM→WAV 変換
+- 音声ファイルは `install.sh` 実行時に一度だけ生成され `~/.local/share/fatigue-monitor/alert.wav` に保存される
+- アラート発火時は API 呼び出しなしでローカルファイルを再生
+- 音声を再生成したい場合: `uv run --script generate_audio.py`
 
 ---
 

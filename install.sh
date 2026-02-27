@@ -83,11 +83,30 @@ EOF
 launchctl load "$PLIST_DEST"
 echo "Installed and started: $PLIST_LABEL"
 echo ""
+
+# ---- アラート音声の事前生成 ----
+AUDIO_FILE="$LOG_DIR/alert.wav"
+if [ -f "$AUDIO_FILE" ]; then
+  echo "Alert audio already exists: $AUDIO_FILE (skipping generation)"
+else
+  echo "Generating alert audio via Gemini TTS Pro..."
+  if "$UV_PATH" run --script "$SCRIPT_DIR/generate_audio.py"; then
+    echo "Alert audio saved: $AUDIO_FILE"
+  else
+    echo ""
+    echo "Error: Audio generation failed."
+    echo "Set GEMINI_API_KEY in ~/.env and re-run: uv run --script $SCRIPT_DIR/generate_audio.py"
+    exit 1
+  fi
+fi
+echo ""
+
 echo "Logs: $LOG_DIR/fatigue-monitor.log"
 echo ""
 echo "Commands:"
-echo "  Manual run:    uv run --script $SCRIPT_DIR/check.py"
-echo "  Dry run:       uv run --script $SCRIPT_DIR/check.py --dry-run"
-echo "  Reset state:   uv run --script $SCRIPT_DIR/check.py --reset"
-echo "  View logs:     tail -f $LOG_DIR/fatigue-monitor.log"
-echo "  Uninstall:     launchctl unload $PLIST_DEST && rm $PLIST_DEST"
+echo "  Manual run:      uv run --script $SCRIPT_DIR/check.py"
+echo "  Dry run:         uv run --script $SCRIPT_DIR/check.py --dry-run"
+echo "  Reset state:     uv run --script $SCRIPT_DIR/check.py --reset"
+echo "  Regen audio:     uv run --script $SCRIPT_DIR/generate_audio.py"
+echo "  View logs:       tail -f $LOG_DIR/fatigue-monitor.log"
+echo "  Uninstall:       launchctl unload $PLIST_DEST && rm $PLIST_DEST"

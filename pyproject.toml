@@ -3,3 +3,9 @@ name = "fatigue-monitor"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "python-dotenv>=1.2.1",
+]

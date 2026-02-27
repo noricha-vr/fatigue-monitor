@@ -1,100 +1,102 @@
-# Detection Logic
+# 検知ロジック
 
-## Overview
+[English version](detection-logic.en.md)
 
-Each run performs a two-stage evaluation to minimize Gemini API calls.
+## 概要
+
+API 呼び出しを最小限に抑えるため、毎回 2 段階評価を行う。
 
 ```
-Messages collected
-    └─ Stage 1: Heuristic filter
-            ├─ No issues → score=0.0, done (no API call)
-            └─ Suspicious → Stage 2: Gemini evaluation
-                    ├─ score < threshold → log, no notification
-                    └─ score ≥ threshold → Discord + TTS alert
+メッセージを収集
+    └─ Stage 1: ヒューリスティックフィルタ
+            ├─ 問題なし → score=0.0、終了（API 呼び出しなし）
+            └─ 疑わしい → Stage 2: Gemini 評価
+                    ├─ score < 閾値 → ログのみ、通知なし
+                    └─ score ≥ 閾値 → Discord + TTS アラート
 ```
 
 ---
 
-## Stage 1 – Heuristic Filter
+## Stage 1 – ヒューリスティックフィルタ
 
-Three conditions are checked independently. **Any one match** marks the session as suspicious and triggers Stage 2.
+3 つの条件を独立にチェックし、**1 つでも該当すれば**「疑わしい」と判定して Stage 2 へ進む。
 
-Before the three checks, a guard is applied: if the message count is below `MIN_MESSAGES` (default: 3), the run is skipped entirely.
+3 条件のチェック前に事前ガードがある: メッセージ数が `MIN_MESSAGES`（デフォルト: 3）未満の場合は実行をスキップする。
 
-### Condition 1 – Prompt length drop
+### 条件 1 – プロンプト長のドロップ
 
-Messages are split into a first half and second half. The average character count of each half is compared:
-
-```
-drop_ratio = (first_half_avg - second_half_avg) / first_half_avg
-```
-
-Triggers if `drop_ratio ≥ PROMPT_LENGTH_DROP_RATIO` (default: 0.30, i.e. 30%).
-
-**Detects**: Prompts becoming shorter and less precise as fatigue sets in.
-
-### Condition 2 – Session duration
+メッセージを前半・後半に二分割し、それぞれの平均文字数を比較する:
 
 ```
-session_min = (latest_message_ts - earliest_message_ts) / 60
+drop_ratio = (前半平均 - 後半平均) / 前半平均
 ```
 
-Triggers if `session_min ≥ SESSION_LONG_MIN` (default: 180 minutes).
+`drop_ratio ≥ PROMPT_LENGTH_DROP_RATIO`（デフォルト: 0.30、30%）で発動。
 
-**Detects**: Working for an extended period without a break.
+**検出対象**: 疲れによってプロンプトが短く・雑になっている状態。
 
-### Condition 3 – Late-night hours
+### 条件 2 – セッション継続時間
+
+```
+session_min = (最新メッセージの ts - 最古メッセージの ts) / 60
+```
+
+`session_min ≥ SESSION_LONG_MIN`（デフォルト: 180 分）で発動。
+
+**検出対象**: 休憩なしの長時間作業。
+
+### 条件 3 – 深夜帯
 
 ```python
 is_late = hour >= LATE_NIGHT_HOUR_START or hour < LATE_NIGHT_HOUR_END
-# Default: hour >= 22 or hour < 5
+# デフォルト: hour >= 22 or hour < 5
 ```
 
-**Detects**: Coding late at night when cognitive performance is reduced.
+**検出対象**: 認知パフォーマンスが低下する深夜帯のコーディング。
 
 ---
 
-## Stage 2 – Gemini API Evaluation
+## Stage 2 – Gemini API 評価
 
-### What is sent
+### 送信する情報
 
-The following data is included in a single API call to `gemini-2.0-flash`:
+`gemini-2.0-flash` への 1 回の API 呼び出しに以下のデータを含める:
 
-**Session statistics**
+**セッション統計**
 
-| Field | Description |
-|-------|-------------|
-| `message_count` | Total messages in this check window |
-| `avg_prompt_length` | Average prompt length in characters |
-| `prompt_length_drop_ratio` | Drop ratio between first and second half (%) |
-| `session_duration_min` | Session duration in minutes |
-| `is_late_night` | Whether the current time is in the late-night range |
+| フィールド | 説明 |
+|-----------|------|
+| `message_count` | 今回のチェック対象メッセージ総数 |
+| `avg_prompt_length` | 平均プロンプト文字数 |
+| `prompt_length_drop_ratio` | 前半・後半のドロップ率（%） |
+| `session_duration_min` | セッション継続時間（分） |
+| `is_late_night` | 現在時刻が深夜帯かどうか |
 
-**Recent prompts**
+**直近のプロンプト**
 
-The last 10 messages, each truncated to 300 characters, formatted as:
+最新 10 件のメッセージを各 300 文字にトランケートし、以下の形式でまとめる:
 
 ```
-[1] (claude-code) prompt text up to 300 chars
-[2] (codex) prompt text up to 300 chars
+[1] (claude-code) プロンプト本文（最大 300 文字）
+[2] (codex) プロンプト本文（最大 300 文字）
 ...
 ```
 
-The source (`claude-code` or `codex`) is included per entry.
+各行にソース（`claude-code` または `codex`）が付く。
 
-### What is returned
+### 返ってくる内容
 
 ```json
 {"score": 7.5, "reason": "prompts getting shorter and vague"}
 ```
 
-| Field | Description |
-|-------|-------------|
-| `score` | Fatigue level from 0.0 to 10.0 |
-| `reason` | Explanation in 40 characters or fewer |
+| フィールド | 説明 |
+|-----------|------|
+| `score` | 疲労度（0.0〜10.0） |
+| `reason` | 40 文字以内の理由（英語） |
 
-`responseMimeType: "application/json"` and `temperature: 0.1` are set to keep output deterministic.
+出力のブレを最小化するため `responseMimeType: "application/json"` と `temperature: 0.1` を指定している。
 
-### Privacy
+### プライバシー
 
-Only the last 10 prompts (≤ 300 chars each) and aggregate statistics are transmitted. Full conversation history never leaves your machine.
+送信されるのは最新 10 件のプロンプト（各 300 文字以内）と集計統計のみ。会話履歴の全文はローカルマシンから外に出ない。

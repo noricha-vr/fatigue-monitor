@@ -1,199 +1,201 @@
 # fatigue-monitor
 
-Watches your [Claude Code](https://claude.ai/code) and [Codex CLI](https://github.com/openai/codex) conversation history, detects when you're getting tired, and sends you a voice + Discord alert before you ship something you'll regret.
+[Claude Code](https://claude.ai/code) と [Codex CLI](https://github.com/openai/codex) の会話ログを監視し、疲れのサインを検知したら音声 + Discord で通知するツール。後悔するコードをデプロイする前に休憩を促してくれる。
 
-## How it works
+[English README](README.en.md)
 
-Every 15 minutes a launchd background job reads the JSONL conversation logs and runs a two-stage check:
+## 仕組み
+
+15 分ごとに launchd バックグラウンドジョブが JSONL 会話ログを読み込み、2 段階チェックを実行する:
 
 ```mermaid
 flowchart TD
-    A[Every 15 min via launchd] --> B[Collect messages since last_check_ts]
-    B --> C{msg count < MIN_MESSAGES?}
-    C -- yes --> D[Skip]
-    C -- no --> E{Heuristic filter}
-    E -- no issues --> F[Log score=0.0, done]
-    E -- suspicious --> G[Gemini 2.0 Flash\nevaluate last 10 prompts]
-    G --> H{score >= FATIGUE_THRESHOLD\ndefault 7.0}
-    H -- no --> I[Log, no notification]
+    A[15分ごと via launchd] --> B[last_check_ts 以降のメッセージを収集]
+    B --> C{メッセージ数 < MIN_MESSAGES?}
+    C -- yes --> D[スキップ]
+    C -- no --> E{ヒューリスティックフィルタ}
+    E -- 問題なし --> F[score=0.0 をログ、終了]
+    E -- 疑わしい --> G[Gemini 2.0 Flash\n直近10件のプロンプトを評価]
+    G --> H{score >= FATIGUE_THRESHOLD\nデフォルト 7.0}
+    H -- no --> I[ログのみ、通知なし]
     H -- yes --> J[Discord Webhook embed\n+ Gemini TTS via afplay]
-    J --> K[Log notified=true\nupdate state.json]
+    J --> K[notified=true をログ\nstate.json を更新]
 ```
 
-### Stage 1 – Heuristic filter
+### Stage 1 – ヒューリスティックフィルタ
 
-Skips the LLM call entirely if none of these conditions are met (saves API cost):
+以下の条件をいずれも満たさない場合は LLM 呼び出しをスキップ（API コスト削減）:
 
-| Condition | Default threshold | What it detects |
-|-----------|-------------------|-----------------|
-| Prompt length drop | ≥ 30% shorter in 2nd half | Getting terse / losing focus |
-| Session duration | ≥ 180 min elapsed | Working too long without a break |
-| Late-night hours | 22:00 – 5:00 | Burning midnight oil |
+| 条件 | デフォルト閾値 | 検出対象 |
+|------|--------------|---------|
+| プロンプト長のドロップ | 後半が 30% 以上短縮 | 集中力低下・内容が雑になる |
+| セッション継続時間 | 180 分以上 | 休憩なしの長時間作業 |
+| 深夜帯 | 22:00 〜 5:00 | 夜更かし |
 
-If at least one condition is met, proceeds to Stage 2.
+いずれか 1 つでも該当すれば Stage 2 へ進む。
 
-### Stage 2 – Gemini 2.0 Flash evaluation
+### Stage 2 – Gemini 2.0 Flash 評価
 
-Sends the last 10 prompts (truncated to 300 chars each) plus session stats to `gemini-2.0-flash` and receives a fatigue score (0.0–10.0) and reason in JSON.
+直近 10 件のプロンプト（各 300 文字にトランケート）とセッション統計を `gemini-2.0-flash` に送信し、疲労スコア（0.0〜10.0）と理由を JSON で受け取る。
 
-### Stage 3 – Alerts (score ≥ 7.0)
+### Stage 3 – アラート（score ≥ 7.0）
 
-- **Discord Webhook** – rich embed with score, reason, and session stats
-- **Voice alert** – Japanese TTS via Gemini TTS API, played with macOS `afplay` (no ffmpeg needed)
+- **Discord Webhook** – スコア・理由・セッション統計を含むリッチ embed
+- **音声アラート** – Gemini TTS API による日本語 TTS を macOS `afplay` で再生（ffmpeg 不要）
 
-### Conversation sources
+### 会話ログの収集元
 
-| Source | Location |
-|--------|----------|
+| ソース | パス |
+|--------|------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` |
 | Codex CLI | `~/.codex/history.jsonl` |
 
-Shell commands (lines starting with `!`) and `[Request interrupted by user]` entries are excluded from analysis.
+`!` で始まるシェルコマンドと `[Request interrupted by user]` は分析から除外される。
 
-> For a detailed breakdown of the heuristic conditions and Gemini API payload, see [docs/detection-logic.md](docs/detection-logic.md).
-
----
-
-## Requirements
-
-- macOS (uses `launchd` for scheduling, `afplay` for audio)
-- [uv](https://docs.astral.sh/uv/) – no other Python setup needed
-- Gemini API key ([get one](https://aistudio.google.com/app/apikey))
-- Discord Webhook URL (Server Settings → Integrations → Webhooks)
+> ヒューリスティック条件と Gemini API ペイロードの詳細は [docs/detection-logic.md](docs/detection-logic.md) を参照。
 
 ---
 
-## Installation
+## 必要なもの
+
+- macOS（スケジューリングに `launchd`、音声再生に `afplay` を使用）
+- [uv](https://docs.astral.sh/uv/) – 他の Python セットアップ不要
+- Gemini API キー（[取得はこちら](https://aistudio.google.com/app/apikey)）
+- Discord Webhook URL（サーバー設定 → 連携サービス → ウェブフック）
+
+---
+
+## インストール
 
 ```bash
 # 1. Clone
 git clone https://github.com/noricha-vr/fatigue-monitor.git
 cd fatigue-monitor
 
-# 2. Set up environment variables
-cp -n .env.example ~/.env   # -n: do not overwrite if ~/.env already exists
-# Or append only the new keys:
+# 2. 環境変数の設定
+cp -n .env.example ~/.env   # -n: ~/.env が既存の場合は上書きしない
+# または必要なキーだけ追記:
 # cat .env.example >> ~/.env
-# Edit ~/.env and fill in GEMINI_API_KEY and DISCORD_WEBHOOK_URL
+# ~/.env を編集して GEMINI_API_KEY と DISCORD_WEBHOOK_URL を設定する
 
-# 3. Install launchd agent (runs every 15 minutes)
+# 3. launchd エージェントのインストール（15 分ごとに実行）
 bash install.sh
 ```
 
-`install.sh` will:
-- Generate a plist at `~/Library/LaunchAgents/com.<username>.fatigue-monitor.plist`
-- Create the log directory at `~/.local/share/fatigue-monitor/`
-- Load the agent immediately (no reboot needed)
+`install.sh` の動作:
+- `~/Library/LaunchAgents/com.<username>.fatigue-monitor.plist` を生成
+- `~/.local/share/fatigue-monitor/` にログディレクトリを作成
+- エージェントを即時ロード（再起動不要）
 
 ---
 
-## Manual usage
+## 手動実行
 
 ```bash
-# Incremental check (since last run)
+# 増分チェック（前回実行以降分）
 uv run --script check.py
 
-# Delete state.json and re-evaluate all history
+# 全履歴を再評価（state.json を削除してリセット）
 uv run --script check.py --reset
 ```
 
-> **Note**: `--dry-run` is not yet implemented. To test without real notifications, temporarily set an invalid webhook URL.
+> **注意**: `--dry-run` は未実装。通知なしでテストするには、一時的に無効な Webhook URL を設定する。
 
 ---
 
-## Configuration
+## 設定
 
-Default values are defined as constants in `check.py`. To change them, edit the file directly:
+デフォルト値は `check.py` の定数として定義されている。変更はファイルを直接編集するか、`~/.env` で環境変数を設定する:
 
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `FATIGUE_THRESHOLD` | `7.0` | Score threshold for sending alerts (0–10) |
-| `MIN_MESSAGES` | `3` | Minimum messages required before evaluating |
-| `PROMPT_LENGTH_DROP_RATIO` | `0.3` | Drop ratio (30%) to trigger LLM evaluation |
-| `SESSION_LONG_MIN` | `180` | Session duration in minutes to trigger LLM |
-| `LATE_NIGHT_HOUR_START` | `22` | Late-night period start (24h) |
-| `LATE_NIGHT_HOUR_END` | `5` | Late-night period end (24h) |
+| 定数 / 環境変数 | デフォルト | 説明 |
+|---------------|-----------|------|
+| `FATIGUE_THRESHOLD` | `7.0` | アラートを送るスコア閾値（0〜10） |
+| `MIN_MESSAGES` | `3` | 評価に必要な最小メッセージ数 |
+| `PROMPT_LENGTH_DROP_RATIO` | `0.3` | LLM 評価を起動するドロップ率（30%） |
+| `SESSION_LONG_MIN` | `180` | LLM 評価を起動するセッション時間（分） |
+| `LATE_NIGHT_HOUR_START` | `22` | 深夜帯の開始時刻（24h） |
+| `LATE_NIGHT_HOUR_END` | `5` | 深夜帯の終了時刻（24h） |
 
-Required environment variables (read from `~/.env`):
+`~/.env` に必須の環境変数:
 
-| Variable | Description |
-|----------|-------------|
-| `GEMINI_API_KEY` | **Required.** Used for both LLM evaluation and TTS |
-| `DISCORD_WEBHOOK_URL` | **Required.** Must start with `https://discord.com/api/webhooks/` |
+| 変数 | 説明 |
+|------|------|
+| `GEMINI_API_KEY` | **必須。** LLM 評価と TTS の両方に使用 |
+| `DISCORD_WEBHOOK_URL` | **必須。** `https://discord.com/api/webhooks/` で始まること |
 
 ---
 
-## What you'll receive
+## 通知の内容
 
 ### Discord embed
 
-When the fatigue score reaches the threshold, you'll get a Discord message like this:
+疲労スコアが閾値に達すると、以下のような Discord メッセージが届く:
 
-| Field | Example |
-|-------|---------|
-| Title | 🔔 Fatigue Alert (score: 7.5 / 10) |
-| Description | **prompts getting shorter and vague** · Time to take a break! |
+| フィールド | 例 |
+|-----------|-----|
+| タイトル | Fatigue Alert (score: 7.5 / 10) |
+| 説明 | **prompts getting shorter and vague** · Time to take a break! |
 | Messages | 39 |
 | Avg prompt length | 3550 chars |
 | Session duration | 8 min |
 | Late night | no |
 | Tools | claude-code |
-| Color | #FF6B35 (orange) |
+| 色 | #FF6B35（オレンジ） |
 
-### Voice alert (macOS)
+### 音声アラート（macOS）
 
-A Japanese TTS message is played via `afplay`:
+`afplay` で日本語 TTS メッセージが再生される:
 
 > 疲労スコア7です。プロンプトが短く曖昧化。少し休憩してみてはいかがでしょうか？
 
-- Model: `gemini-2.5-flash-preview-tts`
-- Voice: Kore (Japanese)
-- No ffmpeg required – uses Python's `wave` module for PCM→WAV conversion
+- モデル: `gemini-2.5-flash-preview-tts`
+- ボイス: Kore（日本語）
+- ffmpeg 不要 – Python の `wave` モジュールで PCM→WAV 変換
 
 ---
 
-## Data & privacy
+## データとプライバシー
 
-Conversation history stays on your machine. Only the **last 10 prompts** (truncated to 300 chars each) plus aggregate stats are sent to the Gemini API.
+会話履歴はローカルマシンに保存される。Gemini API に送信されるのは**最新 10 件のプロンプト**（各 300 文字にトランケート）と集計統計のみ。
 
-| File | Path |
-|------|------|
-| State (last check timestamp) | `~/.local/share/fatigue-monitor/state.json` |
-| Evaluation log | `~/.local/share/fatigue-monitor/log.jsonl` |
-| Daemon stdout/stderr | `~/.local/share/fatigue-monitor/fatigue-monitor.log` |
+| ファイル | パス |
+|---------|------|
+| 状態ファイル（最終チェック時刻） | `~/.local/share/fatigue-monitor/state.json` |
+| 評価ログ | `~/.local/share/fatigue-monitor/log.jsonl` |
+| デーモン stdout/stderr | `~/.local/share/fatigue-monitor/fatigue-monitor.log` |
 
-### log.jsonl format
+### log.jsonl のフォーマット
 
-Each run appends one JSON line:
+1 回の実行で 1 行追記される:
 
 ```json
-// Alert triggered
+// アラート発火
 {"ts": "2026-02-27T01:49:58.554215+00:00", "score": 7.5, "reason": "prompts getting shorter and vague", "stats": {"message_count": 39, "avg_prompt_length": 3550, "prompt_length_drop_ratio": 0.4, "session_duration_min": 8, "is_late_night": false, "sources": ["claude-code"]}, "notified": true}
 
-// Heuristic passed – no LLM call made
+// ヒューリスティックを通過 – LLM 呼び出しなし
 {"ts": "2026-02-27T02:06:27.279728+00:00", "score": 0.0, "reason": "heuristic: no issue", "stats": {"message_count": 32, "avg_prompt_length": 1200, "prompt_length_drop_ratio": 0.1, "session_duration_min": 5, "is_late_night": false, "sources": ["claude-code"]}, "notified": false}
 ```
 
 ---
 
-## Troubleshooting
+## トラブルシューティング
 
-**No Discord notification received**
-- Check `log.jsonl` – if `notified: false`, the score was below the threshold.
-- Verify `DISCORD_WEBHOOK_URL` in `~/.env` starts with `https://discord.com/api/webhooks/`.
-- Run `uv run --script check.py` manually and watch the output.
+**Discord 通知が届かない**
+- `log.jsonl` を確認 – `notified: false` の場合はスコアが閾値未満。
+- `~/.env` の `DISCORD_WEBHOOK_URL` が `https://discord.com/api/webhooks/` で始まっているか確認。
+- `uv run --script check.py` を手動実行して出力を確認。
 
-**`GEMINI_API_KEY` error on startup**
-- The script exits immediately with a `RuntimeError` if the key is missing. Check `~/.env`.
+**起動時に `GEMINI_API_KEY` エラー**
+- キーが未設定の場合、スクリプトは `RuntimeError` で即時終了する。`~/.env` を確認。
 
-**No voice alert**
-- Audio playback uses macOS `afplay`. Not supported on Linux/Windows.
-- Check `~/.local/share/fatigue-monitor/fatigue-monitor.log` for TTS errors.
+**音声アラートが鳴らない**
+- macOS の `afplay` を使用しているため Linux/Windows は非対応。
+- `~/.local/share/fatigue-monitor/fatigue-monitor.log` で TTS エラーを確認。
 
-**Want to force re-evaluation of all history**
-- Run `uv run --script check.py --reset` to delete `state.json` and re-process everything.
+**全履歴を強制再評価したい**
+- `uv run --script check.py --reset` で `state.json` を削除して再処理。
 
-**Check if the daemon is running**
+**デーモンの稼働確認**
 ```bash
 launchctl list | grep fatigue
 tail -f ~/.local/share/fatigue-monitor/fatigue-monitor.log
@@ -201,7 +203,7 @@ tail -f ~/.local/share/fatigue-monitor/fatigue-monitor.log
 
 ---
 
-## Uninstall
+## アンインストール
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.$(whoami).fatigue-monitor.plist
@@ -210,6 +212,6 @@ rm ~/Library/LaunchAgents/com.$(whoami).fatigue-monitor.plist
 
 ---
 
-## License
+## ライセンス
 
 MIT

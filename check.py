@@ -285,7 +285,7 @@ def notify_discord(score: float, reason: str, stats: dict):
 
     req = request.Request(
         webhook_url,
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload, ensure_ascii=False).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )

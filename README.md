@@ -34,7 +34,9 @@ git clone https://github.com/noricha-vr/fatigue-monitor.git
 cd fatigue-monitor
 
 # 2. Set up environment variables
-cp .env.example ~/.env   # or append to existing ~/.env
+cp -n .env.example ~/.env   # -n: do not overwrite if ~/.env already exists
+# Or append only the new keys:
+# cat .env.example >> ~/.env
 #   edit ~/.env and fill in GEMINI_API_KEY and DISCORD_WEBHOOK_URL
 
 # 3. Install launchd agent (runs every 15 minutes)

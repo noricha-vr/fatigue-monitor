@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
-# dependencies = []
+# requires-python = ">=3.13"
+# dependencies = ["python-dotenv"]
 # ///
 """fatigue-monitor: Developer fatigue detection for Claude Code / Codex CLI
 
@@ -35,6 +35,8 @@ from pathlib import Path
 from urllib import request
 from urllib.error import URLError
 
+from dotenv import load_dotenv
+
 # --- 設定（環境変数で上書き可能）---
 MONITOR_DIR = Path.home() / ".local" / "share" / "fatigue-monitor"
 STATE_FILE = MONITOR_DIR / "state.json"
@@ -42,6 +44,8 @@ LOG_FILE = MONITOR_DIR / "log.jsonl"
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_HISTORY_FILE = Path.home() / ".codex" / "history.jsonl"
+
+DISCORD_WEBHOOK_PREFIX = "https://discord.com/api/webhooks/"
 
 
 def get_config() -> dict:
@@ -62,17 +66,6 @@ def get_config() -> dict:
     }
 
 
-# --- 環境変数読み込み ---
-def load_env():
-    """~/.env からキーを読み込み os.environ にセットする（既存の値は上書きしない）。"""
-    env_file = Path.home() / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                key, _, val = line.partition("=")
-                os.environ.setdefault(key.strip(), val.strip())
-
-
 # --- 状態管理（増分チェック用）---
 def load_state() -> dict:
     if STATE_FILE.exists():
@@ -91,28 +84,30 @@ def extract_claude_messages(since_ts: float) -> list[dict]:
     messages = []
     for jsonl_file in CLAUDE_PROJECTS_DIR.rglob("*.jsonl"):
         try:
-            for line in jsonl_file.read_text(errors="replace").splitlines():
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if entry.get("type") != "user":
-                    continue
-                ts_str = entry.get("timestamp", "")
-                if not ts_str:
-                    continue
-                msg_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-                if msg_ts <= since_ts:
-                    continue
+            with open(jsonl_file, errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    entry = json.loads(line)
+                    if entry.get("type") != "user":
+                        continue
+                    ts_str = entry.get("timestamp", "")
+                    if not ts_str:
+                        continue
+                    msg_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+                    if msg_ts <= since_ts:
+                        continue
 
-                content = entry.get("message", {}).get("content", "")
-                if isinstance(content, list):
-                    content = " ".join(
-                        c.get("text", "") for c in content if isinstance(c, dict)
-                    )
-                content = str(content).strip()
-                if content and content != "[Request interrupted by user]":
-                    messages.append({"ts": msg_ts, "text": content, "source": "claude-code"})
-        except Exception:
+                    content = entry.get("message", {}).get("content", "")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            c.get("text", "") for c in content if isinstance(c, dict)
+                        )
+                    content = str(content).strip()
+                    if content and content != "[Request interrupted by user]":
+                        messages.append({"ts": msg_ts, "text": content, "source": "claude-code"})
+        except Exception as e:
+            print(f"Warning: {jsonl_file}: {e}", file=sys.stderr)
             continue
     return messages
 
@@ -123,19 +118,20 @@ def extract_codex_messages(since_ts: float) -> list[dict]:
     if not CODEX_HISTORY_FILE.exists():
         return messages
     try:
-        for line in CODEX_HISTORY_FILE.read_text(errors="replace").splitlines():
-            if not line.strip():
-                continue
-            entry = json.loads(line)
-            msg_ts = float(entry.get("ts", 0))
-            if msg_ts <= since_ts:
-                continue
-            text = entry.get("text", "").strip()
-            # シェルコマンド（! 始まり）は除外
-            if text and not text.startswith("!"):
-                messages.append({"ts": msg_ts, "text": text, "source": "codex"})
-    except Exception:
-        pass
+        with open(CODEX_HISTORY_FILE, errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                msg_ts = float(entry.get("ts", 0))
+                if msg_ts <= since_ts:
+                    continue
+                text = entry.get("text", "").strip()
+                # シェルコマンド（! 始まり）は除外
+                if text and not text.startswith("!"):
+                    messages.append({"ts": msg_ts, "text": text, "source": "codex"})
+    except Exception as e:
+        print(f"Warning: {e}", file=sys.stderr)
     return messages
 
 
@@ -238,12 +234,15 @@ Return ONLY valid JSON:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={api_key}"
+        "gemini-2.0-flash:generateContent"
     )
     req = request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
         method="POST",
     )
     with request.urlopen(req, timeout=15) as resp:
@@ -260,14 +259,21 @@ def notify_discord(score: float, reason: str, stats: dict):
         print("DISCORD_WEBHOOK_URL not set, skipping", file=sys.stderr)
         return
 
-    late_str = "⚠️ yes" if stats["is_late_night"] else "no"
+    if not webhook_url.startswith(DISCORD_WEBHOOK_PREFIX):
+        print(
+            f"Error: DISCORD_WEBHOOK_URL must start with {DISCORD_WEBHOOK_PREFIX}",
+            file=sys.stderr,
+        )
+        return
+
+    late_str = "yes (late night)" if stats["is_late_night"] else "no"
     sources = ", ".join(stats.get("sources", []))
 
     payload = {
         "embeds": [
             {
-                "title": f"🔔 Fatigue Alert (score: {score:.1f} / 10)",
-                "description": f"**{reason}**\n\nTime to take a break! 🌿",
+                "title": f"Fatigue Alert (score: {score:.1f} / 10)",
+                "description": f"**{reason}**\n\nTime to take a break!",
                 "color": 0xFF6B35,
                 "fields": [
                     {"name": "Messages", "value": str(stats["message_count"]), "inline": True},
@@ -297,8 +303,8 @@ def notify_discord(score: float, reason: str, stats: dict):
 
 # --- Gemini TTS 音声通知 ---
 def notify_tts(score: float, reason: str, speak_script: Path):
-    if not speak_script.exists():
-        print(f"speak.sh not found at {speak_script}, skipping TTS", file=sys.stderr)
+    if not speak_script.is_file() or not os.access(speak_script, os.X_OK):
+        print(f"speak.sh not found or not executable at {speak_script}, skipping TTS", file=sys.stderr)
         return
     text = f"疲労スコア{score:.0f}です。{reason}。少し休憩してみてはいかがでしょうか？"
     subprocess.Popen(
@@ -330,7 +336,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Evaluate but skip notifications")
     args = parser.parse_args()
 
-    load_env()
+    load_dotenv(Path.home() / ".env", override=False)
     cfg = get_config()
     MONITOR_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -349,21 +355,22 @@ def main():
     messages = extract_claude_messages(since_ts) + extract_codex_messages(since_ts)
     messages.sort(key=lambda m: m["ts"])
 
-    # 状態を先に更新（クラッシュしても重複処理しない）
-    save_state({"last_check_ts": now_ts})
-
     if not messages:
         print("No messages found (no activity since last check).")
+        save_state({"last_check_ts": now_ts})
+        print("Done.")
         return
 
     print(f"Collected {len(messages)} messages")
 
     # ヒューリスティックフィルタ
     suspicious, stats = heuristic_check(messages, cfg)
-    print(f"Heuristic: {'→ LLM eval' if suspicious else 'OK'} {stats}")
+    print(f"Heuristic: {'-> LLM eval' if suspicious else 'OK'} {stats}")
 
     if not suspicious:
         save_log(0.0, "heuristic: no issue", stats, notified=False)
+        save_state({"last_check_ts": now_ts})
+        print("Done.")
         return
 
     # Gemini Flash で疲労度評価
@@ -388,6 +395,7 @@ def main():
         notified = not args.dry_run
 
     save_log(score, reason, stats, notified)
+    save_state({"last_check_ts": now_ts})
     print("Done.")
 
 

@@ -50,6 +50,8 @@ Sends the last 10 prompts (truncated to 300 chars each) plus session stats to `g
 
 Shell commands (lines starting with `!`) and `[Request interrupted by user]` entries are excluded from analysis.
 
+> For a detailed breakdown of the heuristic conditions and Gemini API payload, see [docs/detection-logic.md](docs/detection-logic.md).
+
 ---
 
 ## Requirements

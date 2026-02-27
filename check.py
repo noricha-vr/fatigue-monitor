@@ -16,7 +16,6 @@ Usage:
 Environment variables (loaded from ~/.env):
     GEMINI_API_KEY          - Required: Gemini API key
     DISCORD_WEBHOOK_URL     - Required: Discord Webhook URL
-    SPEAK_SCRIPT_PATH       - Optional: path to speak.sh (Gemini TTS)
     FATIGUE_THRESHOLD       - Optional: score threshold for alerts (default: 7.0)
     MIN_MESSAGES            - Optional: minimum messages to evaluate (default: 3)
     PROMPT_LENGTH_DROP_RATIO- Optional: length drop ratio to trigger LLM (default: 0.3)
@@ -26,10 +25,13 @@ Environment variables (loaded from ~/.env):
 """
 
 import argparse
+import base64
 import json
 import os
 import subprocess
 import sys
+import tempfile
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request
@@ -57,12 +59,6 @@ def get_config() -> dict:
         "session_long_min": int(os.environ.get("SESSION_LONG_MIN", "180")),
         "late_night_start": int(os.environ.get("LATE_NIGHT_HOUR_START", "22")),
         "late_night_end": int(os.environ.get("LATE_NIGHT_HOUR_END", "5")),
-        "speak_script": Path(
-            os.environ.get(
-                "SPEAK_SCRIPT_PATH",
-                str(Path.home() / ".claude" / "skills" / "speak" / "speak.sh"),
-            )
-        ),
     }
 
 
@@ -302,17 +298,66 @@ def notify_discord(score: float, reason: str, stats: dict):
 
 
 # --- Gemini TTS 音声通知 ---
-def notify_tts(score: float, reason: str, speak_script: Path):
-    if not speak_script.is_file() or not os.access(speak_script, os.X_OK):
-        print(f"speak.sh not found or not executable at {speak_script}, skipping TTS", file=sys.stderr)
+def notify_tts(score: float, reason: str):
+    """Gemini TTS API で音声を生成し afplay で再生する。
+
+    PCM データ（s16le 24kHz mono）を wave モジュールで WAV に変換するため
+    ffmpeg 不要。一時ファイルは再生後に自動削除。
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        print("GEMINI_API_KEY not set, skipping TTS", file=sys.stderr)
         return
+
     text = f"疲労スコア{score:.0f}です。{reason}。少し休憩してみてはいかがでしょうか？"
-    subprocess.Popen(
-        ["/bin/bash", str(speak_script), text],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    payload = {
+        "contents": [{"parts": [{"text": text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": "Kore"}
+                }
+            },
+        },
+    }
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.5-flash-preview-tts:generateContent"
     )
-    print("TTS: sent")
+    req = request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        audio_b64 = data["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        pcm_data = base64.b64decode(audio_b64)
+    except Exception as e:
+        print(f"TTS: API error - {e}", file=sys.stderr)
+        return
+
+    # PCM → WAV → afplay（ffmpeg 不要）
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        with wave.open(tmp_path, "wb") as wav:
+            wav.setnchannels(1)     # モノラル
+            wav.setsampwidth(2)     # 16bit
+            wav.setframerate(24000) # 24kHz
+            wav.writeframes(pcm_data)
+        subprocess.run(["afplay", tmp_path], check=True, timeout=60)
+        print("TTS: played")
+    except Exception as e:
+        print(f"TTS: playback error - {e}", file=sys.stderr)
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 # --- 評価ログ保存 ---
@@ -391,7 +436,7 @@ def main():
             print("[dry-run] Skipping notifications.")
         else:
             notify_discord(score, reason, stats)
-            notify_tts(score, reason, cfg["speak_script"])
+            notify_tts(score, reason)
         notified = not args.dry_run
 
     save_log(score, reason, stats, notified)

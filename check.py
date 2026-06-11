@@ -299,7 +299,7 @@ def notify_discord(score: float, reason: str, stats: dict) -> bool:
 
 # --- 音声通知（事前生成済み WAV を再生）---
 def notify_tts() -> bool:
-    """generate_audio.py で事前生成した alert.wav を afplay で再生する。"""
+    """generate_audio.py で事前生成した alert.wav を再生する。"""
     if not ALERT_AUDIO_FILE.exists():
         print(
             f"TTS: {ALERT_AUDIO_FILE} not found. Run: uv run --script generate_audio.py",
@@ -307,7 +307,13 @@ def notify_tts() -> bool:
         )
         return False
     try:
-        subprocess.run(["afplay", str(ALERT_AUDIO_FILE)], check=True, timeout=60)
+        # 共通入口 play-audio.sh（agent-toolbox Audio Playerで直列再生 + afplayフォールバック）を使い、
+        # 他の通知音と重ならないようにする。キュー待ちがあり得るため timeout は余裕を持たせる
+        subprocess.run(
+            ["/Users/ms25/.claude/scripts/play-audio.sh", str(ALERT_AUDIO_FILE), "alarm"],
+            check=True,
+            timeout=120,
+        )
         print("TTS: played")
         return True
     except Exception as e:

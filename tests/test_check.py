@@ -34,7 +34,9 @@ class TestNotifyTts(unittest.TestCase):
             result = check.notify_tts()
         self.assertTrue(result)
         mock_run.assert_called_once_with(
-            ["afplay", str(mock_file)], check=True, timeout=60
+            ["/Users/ms25/.claude/scripts/play-audio.sh", str(mock_file), "alarm"],
+            check=True,
+            timeout=120,
         )
 
     def test_returns_false_on_playback_error(self):
